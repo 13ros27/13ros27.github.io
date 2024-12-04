@@ -8,7 +8,7 @@ toc = true
 ### The Problem
 `const` functions in Rust have been steadily increasing in functionality since their introduction in [1.31](https://blog.rust-lang.org/2018/12/06/Rust-1.31-and-rust-2018.html#const-fn) however they still have major limitations, leaving many things still inexpressible. One such function is `core::array::from_fn`, which could be very useful in constants, as Guillaume Endignoux explained in his [blog post](https://gendignoux.com/blog/2024/06/17/const-array-from-fn.html) earlier this year.
 
-The goal is at the simple end to be able to generate something like
+The goal at the simple end is to be able to generate something like
 ```rust
 const MULTIPLES_OF_2: [usize; 10] = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18];
 ```
@@ -60,7 +60,7 @@ Well, initially the compiler complains about `[MaybeUninit<T>; N]` not necessari
 ```rust
 error[E0015]: cannot call non-const closure in constant functions
 ```
-This seems to pretty straightforwardly dash our hopes without the [const_trait_impl](https://github.com/rust-lang/rust/issues/67792) feature, we can't make a function that uses a callback.
+This seems to pretty straightforwardly dash our hopes as without the [const_trait_impl](https://github.com/rust-lang/rust/issues/67792) feature, we can't make a function that uses a callback.
 
 ### What about a macro?
 While we clearly can't do this with a function, declarative macros effectively copy-paste code into our program, so should work just fine. And indeed it does (sorry for ruining the surprise :D).
@@ -99,7 +99,7 @@ const MULTIPLES_OF_2: [bool; 10] = from_const_fn!(multiply, 10);
 ```
 Ahhh, it appears we've done an oopsy. We're generating a `u8` and then secretly converting it to a `bool` but its then only valid to be 0 or 1 so errors with 2. When used in `const` this isn't terrible because the compiler will at least catch it for us, but it can't do that if we use this at runtime, and that's how you get [nasal demons](https://groups.google.com/g/comp.std.c/c/ycpVKxTZkgw/m/S2hHdTbv4d8J?hl=en&pli=1).
 
-If we look at our macro we only have one use of `unsafe`, so it must be that `transmute` at the end. What we're trying to do with this is convert `[MaybeUninit<T>; $n]` to `[T; $n]` however we haven't put any limitations on it so there is no guarantee `T` will be the same for both sides (or even that `$n` is the same). However we can't just add a turbofish to specify this as we can't name the type `T` in our macro, as we don't have a type signature. Instead we need to wrap the transmute in a function that can then limit it for us.
+If we look at our macro we only have one use of `unsafe`, so it must be that `transmute` at the end. What we're trying to do with this is convert `[MaybeUninit<T>; $n]` to `[T; $n]` however we haven't put any limitations on it so there is no guarantee `T` will be the same for both sides (or even that `$n` is the same). However we can't just add a turbofish to specify this as we can't name the type `T` in our macro because we don't have a type signature. Instead we need to wrap the transmute in a function that can then limit it for us.
 ```rust
 /// # Safety
 /// It is up to the caller to guarantee that all elements of the array are
@@ -197,7 +197,7 @@ macro_rules! from_const_fn {
     }};
 }
 ```
-We can even remove `array_assume_init` as now that its all wrapped in a function we can give `array` a specific type, constraining `transmute_const` sufficiently. However the compiler now complains that `$cb(i)` is returning a `u8` where its expecting `T`. And it has a point, we're no longer proving that the callback returns the same type as `array` expects. Luckily however, while we can't call functions passed as arguments, we can still pass one, and therefore use it to constrain `T`.
+We can even remove `array_assume_init` as now that its all wrapped in a function we can give `array` a specific type, constraining `transmute_const` sufficiently. However the compiler now complains that `$cb(i)` is returning a `u8` where its expecting `T`. And it has a point, we're no longer proving that the callback returns the same type as `array` expects. Luckily however, while we can't call functions passed as arguments, we can still pass one in and therefore use it to constrain `T`.
 ```rust
 macro_rules! from_const_fn {
     ($cb:expr) => {{
@@ -231,7 +231,9 @@ There are a couple of slightly unusual additions here marked with comments:
 2. Despite the return type of `$cb` now being guaranteed to match `T` the compiler still can't prove this so we still have to transmute it, it's just safe to do so now.
 
 ### Drop Safety
-Thanks to an event sometimes known as the '[Leakpocalypse](https://cglab.ca/%7Eabeinges/blah/everyone-poops/)' it's not considered unsound in Rust to leak memory. But where we it's avoidable it _is_ impolite. If we drop a `MaybeUninit<T>` it will not run the destructor on `T` because it doesn't know whether the type is initialised or not and therefore whether to destruct it (this is the same for any `union`). But as the function writer we do know whether it's initialised or not as everything up to `i` is initialised, and everything after isn't. Why would not dropping this ever matter though, after all it will only leak memory if it crashed halfway through and then the program ends so it doesn't matter. However if the passed callback function panics halfway through and then we catch the unwinding program and force it to continue, we have just leaked memory.
+Thanks to an event sometimes known as the '[Leakpocalypse](https://cglab.ca/%7Eabeinges/blah/everyone-poops/)' it's not considered unsound in Rust to leak memory. But where it's avoidable it _is_ impolite. If we drop a `MaybeUninit<T>` it will not run the destructor on `T` because it doesn't know whether the type is initialised or not and therefore whether to destruct it (this is the same for any `union`). But as the function writer we do know as everything up to `i` is initialised, and everything after isn't.
+
+Why would not dropping this ever matter though? After all it will only leak memory if it crashed halfway through and then the program ends so it doesn't matter. However if the passed callback function panics halfway through and then we catch the unwinding program and force it to continue, we've just leaked memory.
 
 To fix this we can use a `Guard` struct that implements `drop` and then simply `mem::forget` it when we have fully initialised the array. As of [Rust 1.83](https://blog.rust-lang.org/2024/11/28/Rust-1.83.0.html#new-const-capabilities) we can use mutable references in constants, making this possible on stable.
 ```rust
