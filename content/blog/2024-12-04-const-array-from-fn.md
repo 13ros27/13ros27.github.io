@@ -5,7 +5,7 @@ date = 2024-12-04
 toc = true
 +++
 
-### The Problem
+## The Problem
 `const` functions in Rust have been steadily increasing in functionality since their introduction in [1.31](https://blog.rust-lang.org/2018/12/06/Rust-1.31-and-rust-2018.html#const-fn) however they still have major limitations, leaving many things still inexpressible. One such function is `core::array::from_fn`, which could be very useful in constants, as Guillaume Endignoux explained in his [blog post](https://gendignoux.com/blog/2024/06/17/const-array-from-fn.html) earlier this year.
 
 The goal at the simple end is to be able to generate something like
@@ -21,7 +21,7 @@ Unfortunately however running this (as of Rust 1.83) will error, and it seems un
 error[E0015]: cannot call non-const fn `std::array::from_fn::<usize, 10, {closure@src/main.rs:1:58: 1:61}>` in constants
 ```
 
-### Generating it manually
+## Generating it manually
 While we can't just call an existing function, we can use a loop to create this ourselves, which can be useful for long or complicated arrays.
 ```rust
 use core::mem::{transmute, MaybeUninit};
@@ -62,7 +62,7 @@ error[E0015]: cannot call non-const closure in constant functions
 ```
 This seems to pretty straightforwardly dash our hopes as without the [const_trait_impl](https://github.com/rust-lang/rust/issues/67792) feature, we can't make a function that uses a callback.
 
-### What about a macro?
+## What about a macro?
 While we clearly can't do this with a function, declarative macros effectively copy-paste code into our program, so should work just fine. And indeed it does (sorry for ruining the surprise :D).
 ```rust
 macro_rules! from_const_fn {
@@ -113,7 +113,7 @@ const unsafe fn array_assume_init<T, const N: usize>(
 ```
 This properly encodes what we are trying to do with our types, preventing misuse, but it also runs afoul of the `transmute` issue we saw earlier. While `transmute` is largely quite happy with __whatever__ you try to do with it, it does at least check that you aren't changing the size of your type. However these checks don't always play nicely with generics, to the extent that casting `MaybeUninit<T>` to `T` doesn't work with `transmute`, although in practice these are guaranteed to be the same size and alignment.
 
-### Turning lead into differently-sized gold
+## Turning lead into differently-sized gold
 If we want to implement this function; `transmute` won't cut it. Luckily Rust has a bit of a black sheep in the form of `union`, typically considered the realm of C inter-op (and also used in types like `MaybeUninit`). This allows us to input our value in as one type and pull it out as another, with no limitations on the types involved. With this we can make an even more wildly unsafe counterpart to a function already often considered a last resort of unsafe programming, `transmute_unchecked`.
 ```rust
 use core::mem::ManuallyDrop;
@@ -153,7 +153,7 @@ const unsafe fn transmute_const<Src, Dst>(src: Src) -> Dst {
 }
 ```
 
-### Putting it all together
+## Putting it all together
 With this we can change the call to `transmute` in `array_assume_init` to `transmute_const` and put it all together, resulting in a fully functional `from_const_fn` macro.
 ```rust
 macro_rules! from_const_fn {
@@ -176,7 +176,7 @@ const fn multiply(n: usize) -> u8 {
 const MULTIPLES_OF_2: [u8; 10] = from_const_fn!(multiply, 10);
 ```
 
-### Why does this not feel fully satisfying?
+## Why does this not feel fully satisfying?
 We did it, it works, but that extra number when calling it is very clunky and *should* be completely unnecessary. After all `array::from_fn` doesn't need you to specify the length, instead implying it from context. But macros don't get type elision, and we found early on that a function was not going to cut it. So what about both, a macro calling a function. *Well*, this would allow us to place the callback into the function directly (so that we don't have to pass it as an argument) and the return type should give us the `N` that we need, so it seems worth a try.
 ```rust
 macro_rules! from_const_fn {
@@ -230,7 +230,7 @@ There are a couple of slightly unusual additions here marked with comments:
 1. We wrap our function input in a `ManuallyDrop` as otherwise the compiler complains about `Drop` in a `const` function, which isn't currently supported. While this in theory could cause it to leak memory, in practice I don't know a way of making a function that needs dropping without using `move` closures. And if we try and pass a `move` closure to this macro (even at runtime) the compiler will complain so this `ManuallyDrop` causes no issues.
 2. Despite the return type of `$cb` now being guaranteed to match `T` the compiler still can't prove this so we still have to transmute it, it's just safe to do so now.
 
-### Drop Safety
+## Drop Safety
 Thanks to an event sometimes known as the '[Leakpocalypse](https://cglab.ca/%7Eabeinges/blah/everyone-poops/)' it's not considered unsound in Rust to leak memory. But where it's avoidable it _is_ impolite. If we drop a `MaybeUninit<T>` it will not run the destructor on `T` because it doesn't know whether the type is initialised or not and therefore whether to destruct it (this is the same for any `union`). But as the function writer we do know as everything up to `i` is initialised, and everything after isn't.
 
 Why would not dropping this ever matter though? After all it will only leak memory if it crashed halfway through and then the program ends so it doesn't matter. However if the passed callback function panics halfway through and then we catch the unwinding program and force it to continue, we've just leaked memory.
@@ -280,7 +280,7 @@ impl<'a, T, const N: usize> Guard<'a, T, N> {
 ```
 Then we can simply use `Guard::get_index` instead of storing `i` separately in our function body. The reason we have to use getter and setter methods for `index` here is that changing `index` can be unsound if `array` isn't actually sufficiently initialised.
 
-### Closure Support
+## Closure Support
 The primary remaining annoyance with our `from_const_fn!` in comparison to `array::from_fn` is that when used in `const` we can't use a closure in it, despite the functions used often being very simple, because closures aren't supported in `const`. However this isn't a function, its a macro, so we can parse the closure ourselves and convert it into a function (provided it doesn't do anything closure specific).
 ```rust
 macro_rules! convert_function {
@@ -307,7 +307,7 @@ macro_rules! convert_function {
 ```
 The closure signature `|$var:ident $(: $_:ident)?| $(-> $__:ident)? $body:expr` is a little complicated but all it does is recognise `|<variable>| <body>` while ignoring type signatures.
 
-### And we're done!
+## And we're done!
 With this conversion macro and the guard changes above, we're done, a fully functional `array::from_fn` equivalent that supports everything except closures borrowing from their environment, and works in `const`.
 ```rust
 #[macro_export]
