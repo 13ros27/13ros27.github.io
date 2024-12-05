@@ -284,7 +284,10 @@ Then we can simply use `Guard::get_index` instead of storing `i` separately in o
 The primary remaining annoyance with our `from_const_fn!` in comparison to `array::from_fn` is that when used in `const` we can't use a closure in it, despite the functions used often being very simple, because closures aren't supported in `const`. However this isn't a function, its a macro, so we can parse the closure ourselves and convert it into a function (provided it doesn't do anything closure specific).
 ```rust
 macro_rules! convert_function {
-    (|$var:ident $(: $_:ident)?| $(-> $__:ident)? $body:expr) => {
+    (|$var:ident $(: $_:ty)?| -> $__:ty { $body:expr }) => {
+        $crate::convert_function!(|$var| $body)
+    };
+    (|$var:ident $(: $_:ty)?| $body:expr) => {
         /// # Safety
         /// `$body` must return `T`
         const unsafe fn callback<T>($var: usize) -> T {
@@ -305,7 +308,9 @@ macro_rules! convert_function {
     }
 }
 ```
-The closure signature `|$var:ident $(: $_:ident)?| $(-> $__:ident)? $body:expr` is a little complicated but all it does is recognise `|<variable>| <body>` while ignoring type signatures.
+The closure signatures `|$var:ident $(: $_:ty)?| -> $__:ty { $body:expr }` (and similar) are a little complicated but all they do is recognise `|<variable>| <body>` while ignoring type signatures.
+
+_(Edited 2024-12-5 to change `$ident` to `$ty`, thanks [u/AlxandrHeintz](https://www.reddit.com/r/rust/comments/1h6in8z/comment/m0e3dt3/?utm_source=share&utm_medium=web3x&utm_name=web3xcss&utm_term=1&utm_content=share_button))_
 
 ## And we're done!
 With this conversion macro and the guard changes above, we're done, a fully functional `array::from_fn` equivalent that supports everything except closures borrowing from their environment, and works in `const`.
