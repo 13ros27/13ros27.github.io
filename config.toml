@@ -4,6 +4,9 @@ compile_sass = true
 minify_html = true
 build_search_index = false
 
+generate_feeds = true
+feed_filenames = ["atom.xml", "rss.xml"]
+
 theme = "anemone"
 
 [markdown]
@@ -18,5 +21,7 @@ image = ""
 default_theme = "night"
 
 header_nav = [
+  { url = "/atom.xml", "name_en" = "/atom/" },
+  { url = "/rss.xml", name_en = "/rss/" },
   { url = "/blog", name_en = "/blog/" }
 ]
