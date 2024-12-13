@@ -1,0 +1,348 @@
+<!doctype html><html lang=en><head><meta charset=UTF-8><meta content="IE=edge" http-equiv=X-UA-Compatible><meta content="text/html; charset=UTF-8" http-equiv=content-type><meta content="width=device-width,initial-scale=1,user-scalable=no" name=viewport><meta content="index, follow" name=robots><title>Designing a const `array::from_fn` in stable Rust</title><meta content="Designing a const `array::from_fn` in stable Rust" name=title><meta content=website property=og:type><meta content=https://13ros27.github.io/blog/const-array-from-fn/ property=og:url><meta content="Blog Posts" property=og:site_name><meta content="Designing a const `array::from_fn` in stable Rust" property=og:title><meta content=https://13ros27.github.io/favicon.ico property=og:image><meta content=summary_large_image property=twitter:card><meta content=https://13ros27.github.io/blog/const-array-from-fn/ property=twitter:url><meta content="Designing a const `array::from_fn` in stable Rust" property=twitter:title><meta content=https://13ros27.github.io/favicon.ico property=twitter:image><link href=https://13ros27.github.io/blog/const-array-from-fn/ rel=canonical><link rel="shortcut icon" href=https://13ros27.github.io/favicon.ico type=image/x-icon><link href=https://13ros27.github.io/atom.xml rel=alternate title=RSS type=application/atom+xml><link href=https://speyll.github.io/suCSS/reset-min.css rel=stylesheet><link href=https://speyll.github.io/suCSS/suCSS-min.css rel=stylesheet><link href=https://13ros27.github.io/css/style.css rel=stylesheet><script defer src=https://13ros27.github.io/js/script.js></script><body><header><nav id=nav-bar><a href=/atom.xml> /atom/ </a><a href=/rss.xml> /rss/ </a><a href=/blog> /blog/ </a><div><input id=theme-toggle style=display:none type=checkbox><label for=theme-toggle id=theme-toggle-label><svg class=icons id=theme-icon><use href=https://13ros27.github.io/icons.svg#lightMode></use></svg></label><audio id=theme-sound><source src=https://13ros27.github.io/click.ogg type=audio/ogg></audio></div></nav></header><main><div><a href=..>..</a>/<span class=accent-data>const-array-from-fn</span></div><time datetime=2024-12-04>Published on: <span class=accent-data>2024-12-04</span></time><h1>Designing a const `array::from_fn` in stable Rust</h1><h2>Table of contents</h2><ul><li><a href=https://13ros27.github.io/blog/const-array-from-fn/#the-problem>The Problem</a><li><a href=https://13ros27.github.io/blog/const-array-from-fn/#generating-it-manually>Generating it manually</a><li><a href=https://13ros27.github.io/blog/const-array-from-fn/#what-about-a-macro>What about a macro?</a><li><a href=https://13ros27.github.io/blog/const-array-from-fn/#turning-lead-into-differently-sized-gold>Turning lead into differently-sized gold</a><li><a href=https://13ros27.github.io/blog/const-array-from-fn/#putting-it-all-together>Putting it all together</a><li><a href=https://13ros27.github.io/blog/const-array-from-fn/#why-does-this-not-feel-fully-satisfying>Why does this not feel fully satisfying?</a><li><a href=https://13ros27.github.io/blog/const-array-from-fn/#drop-safety>Drop Safety</a><li><a href=https://13ros27.github.io/blog/const-array-from-fn/#closure-support>Closure Support</a><li><a href=https://13ros27.github.io/blog/const-array-from-fn/#and-we-re-done>And we're done!</a></ul><h2 id=the-problem>The Problem</h2><p><code>const</code> functions in Rust have been steadily increasing in functionality since their introduction in <a href=https://blog.rust-lang.org/2018/12/06/Rust-1.31-and-rust-2018.html#const-fn>1.31</a> however they still have major limitations, leaving many things still inexpressible. One such function is <code>core::array::from_fn</code>, which could be very useful in constants, as Guillaume Endignoux explained in his <a href=https://gendignoux.com/blog/2024/06/17/const-array-from-fn.html>blog post</a> earlier this year.<p>The goal at the simple end is to be able to generate something like<pre class=language-rust data-lang=rust style=color:#c0c5ce;background-color:#2b303b><code class=language-rust data-lang=rust><span style=color:#b48ead>const </span><span style=color:#d08770>MULTIPLES_OF_2</span><span>: [</span><span style=color:#b48ead>usize</span><span>; </span><span style=color:#d08770>10</span><span>] = [</span><span style=color:#d08770>0</span><span>, </span><span style=color:#d08770>2</span><span>, </span><span style=color:#d08770>4</span><span>, </span><span style=color:#d08770>6</span><span>, </span><span style=color:#d08770>8</span><span>, </span><span style=color:#d08770>10</span><span>, </span><span style=color:#d08770>12</span><span>, </span><span style=color:#d08770>14</span><span>, </span><span style=color:#d08770>16</span><span>, </span><span style=color:#d08770>18</span><span>];
+</span></code></pre><p>with a function rather than needing to manually type the values.<pre class=language-rust data-lang=rust style=color:#c0c5ce;background-color:#2b303b><code class=language-rust data-lang=rust><span style=color:#b48ead>const </span><span style=color:#d08770>MULTIPLES_OF_2</span><span>: [</span><span style=color:#b48ead>usize</span><span>; </span><span style=color:#d08770>10</span><span>] = core::array::from_fn(|</span><span style=color:#bf616a>n</span><span>| n * </span><span style=color:#d08770>2</span><span>);
+</span></code></pre><p>Unfortunately however running this (as of Rust 1.83) will error, and it seems unlikely to change anytime soon.<pre class=language-rust data-lang=rust style=color:#c0c5ce;background-color:#2b303b><code class=language-rust data-lang=rust><span>error[</span><span style=color:#d08770>E0015</span><span>]: cannot call non-</span><span style=color:#b48ead>const fn</span><span> `std::array::from_fn::<</span><span style=color:#b48ead>usize</span><span>, 10, </span><span style=color:#2b303b;background-color:#bf616a>{</span><span>closure@src/main.rs:</span><span style=color:#d08770>1</span><span>:</span><span style=color:#d08770>58</span><span>: </span><span style=color:#d08770>1</span><span>:</span><span style=color:#d08770>61</span><span>}>` in constants
+</span></code></pre><h2 id=generating-it-manually>Generating it manually</h2><p>While we can't just call an existing function, we can use a loop to create this ourselves, which can be useful for long or complicated arrays.<pre class=language-rust data-lang=rust style=color:#c0c5ce;background-color:#2b303b><code class=language-rust data-lang=rust><span style=color:#b48ead>use </span><span>core::mem::{transmute, MaybeUninit};
+</span><span>
+</span><span style=color:#b48ead>const </span><span style=color:#d08770>MULTIPLES_OF_2</span><span>: [</span><span style=color:#b48ead>usize</span><span>; </span><span style=color:#d08770>10</span><span>] = {
+</span><span>    </span><span style=color:#b48ead>let mut</span><span> array = [</span><span style=color:#b48ead>const </span><span>{ MaybeUninit::uninit() }; </span><span style=color:#d08770>10</span><span>];
+</span><span>    </span><span style=color:#b48ead>let mut</span><span> i = </span><span style=color:#d08770>0</span><span>;
+</span><span>    </span><span style=color:#b48ead>while</span><span> i < </span><span style=color:#d08770>10 </span><span>{ </span><span style=color:#65737e>// &LT-- Note 1
+</span><span>        array[i] = MaybeUninit::new(i * </span><span style=color:#d08770>2</span><span>);
+</span><span>        i += </span><span style=color:#d08770>1</span><span>;
+</span><span>    }
+</span><span>    </span><span style=color:#65737e>// SAFETY: We initialised each `MaybeUninit` in the loop so we can `assume_init`
+</span><span>    </span><span style=color:#b48ead>unsafe </span><span>{ </span><span style=color:#96b5b4>transmute</span><span>(array) } </span><span style=color:#65737e>// &LT-- Note 2
+</span><span>};
+</span></code></pre><p>There are a couple of slight oddities here, marked with comments:<ol><li>We have to use a <code>while</code> loop to fake a <code>for</code> loop here because the latter isn't supported in <code>const</code> (without <a href=https://github.com/rust-lang/rust/issues/87575>const_for</a>)<li>This <code>transmute</code> is standing in for <code>MaybeUninit::array_assume_init</code> as that is currently unstable (without <a href=https://github.com/rust-lang/rust/issues/96097>maybe_uninit_array_assume_init</a>)</ol><p>Despite these limitations this is a functional solution, but its <em>very</em> clunky, lets see if we can improve it.<p>The first thing to consider is whether we can place this wholesale in a function, translating the 10 to a const generic <code>N</code> and placing <code>i * 2</code> back into a passed function.<pre class=language-rust data-lang=rust style=color:#c0c5ce;background-color:#2b303b><code class=language-rust data-lang=rust><span style=color:#b48ead>const fn </span><span style=color:#8fa1b3>from_const_fn</span><span>&LTT, </span><span style=color:#b48ead>const</span><span> N: </span><span style=color:#b48ead>usize</span><span>>(</span><span style=color:#bf616a>cb</span><span>: impl FnMut(</span><span style=color:#bf616a>usize</span><span>) -> T) -> [T; N] {
+</span><span>    </span><span style=color:#b48ead>let mut</span><span> array = [</span><span style=color:#b48ead>const </span><span>{ MaybeUninit::uninit() }; N];
+</span><span>    </span><span style=color:#b48ead>let mut</span><span> i = </span><span style=color:#d08770>0</span><span>;
+</span><span>    </span><span style=color:#b48ead>while</span><span> i < N {
+</span><span>        array[i] = MaybeUninit::new(</span><span style=color:#96b5b4>cb</span><span>(i));
+</span><span>        i += </span><span style=color:#d08770>1</span><span>;
+</span><span>    }
+</span><span>    </span><span style=color:#65737e>// SAFETY: We initialised each `MaybeUninit` in the loop so we can `assume_init`
+</span><span>    </span><span style=color:#b48ead>unsafe </span><span>{ </span><span style=color:#96b5b4>transmute</span><span>(array) }
+</span><span>}
+</span></code></pre><p>Well, initially the compiler complains about <code>[MaybeUninit&LTT>; N]</code> not necessarily being the same size as <code>[T; N]</code> (because <code>transmute</code> doesn't handle generics well, this will come back to bite us later). However if we comment out the <code>transmute</code> and replace it with <code>todo!()</code> we see a much worse error.<pre class=language-rust data-lang=rust style=color:#c0c5ce;background-color:#2b303b><code class=language-rust data-lang=rust><span>error[</span><span style=color:#d08770>E0015</span><span>]: cannot call non-</span><span style=color:#b48ead>const</span><span> closure in constant functions
+</span></code></pre><p>This seems to pretty straightforwardly dash our hopes as without the <a href=https://github.com/rust-lang/rust/issues/67792>const_trait_impl</a> feature, we can't make a function that uses a callback.<h2 id=what-about-a-macro>What about a macro?</h2><p>While we clearly can't do this with a function, declarative macros effectively copy-paste code into our program, so should work just fine. And indeed it does (sorry for ruining the surprise :D).<pre class=language-rust data-lang=rust style=color:#c0c5ce;background-color:#2b303b><code class=language-rust data-lang=rust><span style=color:#96b5b4>macro_rules! </span><span>from_const_fn {
+</span><span>	(</span><span style=color:#bf616a>$cb</span><span>:</span><span style=color:#b48ead>expr</span><span>, </span><span style=color:#bf616a>$n</span><span>:</span><span style=color:#b48ead>expr</span><span>) => {{
+</span><span>    	</span><span style=color:#b48ead>let mut</span><span> array = [</span><span style=color:#b48ead>const </span><span>{ ::core::mem::MaybeUninit::uninit() }; </span><span style=color:#bf616a>$n</span><span>];
+</span><span>    	</span><span style=color:#b48ead>let mut</span><span> i = </span><span style=color:#d08770>0</span><span>;
+</span><span>    	</span><span style=color:#b48ead>while</span><span> i < </span><span style=color:#bf616a>$n </span><span>{
+</span><span>        	array[i] = ::core::mem::MaybeUninit::new(</span><span style=color:#bf616a>$cb</span><span>(i));
+</span><span>        	i += </span><span style=color:#d08770>1</span><span>;
+</span><span>    	}
+</span><span>        </span><span style=color:#65737e>// SAFETY: We initialised each `MaybeUninit` in the loop
+</span><span>        </span><span style=color:#65737e>//  so we can `assume_init`
+</span><span>    	</span><span style=color:#b48ead>unsafe </span><span>{ ::core::mem::transmute(array) }
+</span><span>	}};
+</span><span>}
+</span><span>
+</span><span style=color:#b48ead>const fn </span><span style=color:#8fa1b3>multiply</span><span>(</span><span style=color:#bf616a>n</span><span>: </span><span style=color:#b48ead>usize</span><span>) -> </span><span style=color:#b48ead>usize </span><span>{
+</span><span>	n * </span><span style=color:#d08770>2
+</span><span>}
+</span><span style=color:#b48ead>const </span><span style=color:#d08770>MULTIPLES_OF_2</span><span>: [</span><span style=color:#b48ead>usize</span><span>; </span><span style=color:#d08770>10</span><span>] = from_const_fn!(multiply, </span><span style=color:#d08770>10</span><span>);
+</span></code></pre><p>Well <em>maybe</em>, we have this extra <code>n</code> variable which defines how long the array is, what if we leave the array length at 10 but change <code>n</code> to <code>15</code>.<pre class=language-rust data-lang=rust style=color:#c0c5ce;background-color:#2b303b><code class=language-rust data-lang=rust><span>error[</span><span style=color:#d08770>E0512</span><span>]: cannot transmute between types of different sizes, or dependently-sized types
+</span></code></pre><p>Okay, fair enough, we're trying to transmute <code>[MaybeUninit&LTusize>; 15]</code> to <code>[usize; 10]</code> and they don't fit together. But what if we get smarter.<pre class=language-rust data-lang=rust style=color:#c0c5ce;background-color:#2b303b><code class=language-rust data-lang=rust><span style=color:#b48ead>const fn </span><span style=color:#8fa1b3>multiply</span><span>(</span><span style=color:#bf616a>n</span><span>: </span><span style=color:#b48ead>usize</span><span>) -> </span><span style=color:#b48ead>u8 </span><span>{
+</span><span>    n as </span><span style=color:#b48ead>u8 </span><span>* </span><span style=color:#d08770>2
+</span><span>}
+</span><span style=color:#b48ead>const </span><span style=color:#d08770>MULTIPLES_OF_2</span><span>: [</span><span style=color:#b48ead>bool</span><span>; </span><span style=color:#d08770>10</span><span>] = from_const_fn!(multiply, </span><span style=color:#d08770>10</span><span>);
+</span><span>
+</span><span>>>> error[</span><span style=color:#d08770>E0080</span><span>]: it is undefined behavior to </span><span style=color:#b48ead>use</span><span> this value
+</span></code></pre><p>Ahhh, it appears we've done an oopsy. We're generating a <code>u8</code> and then secretly converting it to a <code>bool</code> but its then only valid to be 0 or 1 so errors with 2. When used in <code>const</code> this isn't terrible because the compiler will at least catch it for us, but it can't do that if we use this at runtime, and that's how you get <a href="https://groups.google.com/g/comp.std.c/c/ycpVKxTZkgw/m/S2hHdTbv4d8J?hl=en&pli=1">nasal demons</a>.<p>If we look at our macro we only have one use of <code>unsafe</code>, so it must be that <code>transmute</code> at the end. What we're trying to do with this is convert <code>[MaybeUninit&LTT>; $n]</code> to <code>[T; $n]</code> however we haven't put any limitations on it so there is no guarantee <code>T</code> will be the same for both sides (or even that <code>$n</code> is the same). However we can't just add a turbofish to specify this as we can't name the type <code>T</code> in our macro because we don't have a type signature. Instead we need to wrap the transmute in a function that can then limit it for us.<pre class=language-rust data-lang=rust style=color:#c0c5ce;background-color:#2b303b><code class=language-rust data-lang=rust><span style=color:#65737e>/// # Safety
+</span><span style=color:#65737e>/// It is up to the caller to guarantee that all elements of the array are
+</span><span style=color:#65737e>///  in an initialized state.
+</span><span style=color:#b48ead>const unsafe fn </span><span style=color:#8fa1b3>array_assume_init</span><span>&LTT, </span><span style=color:#b48ead>const</span><span> N: </span><span style=color:#b48ead>usize</span><span>>(
+</span><span>    </span><span style=color:#bf616a>array</span><span>: [MaybeUninit&LTT>; N],
+</span><span>) -> [T; N] {
+</span><span>    </span><span style=color:#65737e>// SAFETY: Guaranteed by caller
+</span><span>    </span><span style=color:#b48ead>unsafe </span><span>{ </span><span style=color:#96b5b4>transmute</span><span>(array) }
+</span><span>}
+</span></code></pre><p>This properly encodes what we are trying to do with our types, preventing misuse, but it also runs afoul of the <code>transmute</code> issue we saw earlier. While <code>transmute</code> is largely quite happy with <strong>whatever</strong> you try to do with it, it does at least check that you aren't changing the size of your type. However these checks don't always play nicely with generics, to the extent that casting <code>MaybeUninit&LTT></code> to <code>T</code> doesn't work with <code>transmute</code>, although in practice these are guaranteed to be the same size and alignment.<h2 id=turning-lead-into-differently-sized-gold>Turning lead into differently-sized gold</h2><p>If we want to implement this function; <code>transmute</code> won't cut it. Luckily Rust has a bit of a black sheep in the form of <code>union</code>, typically considered the realm of C inter-op (and also used in types like <code>MaybeUninit</code>). This allows us to input our value in as one type and pull it out as another, with no limitations on the types involved. With this we can make an even more wildly unsafe counterpart to a function already often considered a last resort of unsafe programming, <code>transmute_unchecked</code>.<pre class=language-rust data-lang=rust style=color:#c0c5ce;background-color:#2b303b><code class=language-rust data-lang=rust><span style=color:#b48ead>use </span><span>core::mem::ManuallyDrop;
+</span><span>
+</span><span style=color:#65737e>/// # Safety
+</span><span style=color:#65737e>///  - The caller must follow all invariants of `mem::transmute`
+</span><span style=color:#65737e>///  - `size_of::&LTSrc>() == size_of::&LTDst>()`
+</span><span style=color:#b48ead>const unsafe fn </span><span style=color:#8fa1b3>transmute_unchecked</span><span>&LTSrc, Dst>(</span><span style=color:#bf616a>src</span><span>: Src) -> Dst {
+</span><span>    #[</span><span style=color:#bf616a>repr</span><span>(C)]
+</span><span>    union Transmute&LTSrc, Dst> {
+</span><span>        src: ManuallyDrop&LTSrc>,
+</span><span>        dst: ManuallyDrop&LTDst>,
+</span><span>    }
+</span><span>
+</span><span>    </span><span style=color:#b48ead>let</span><span> alchemy = Transmute {
+</span><span>        src: ManuallyDrop::new(src),
+</span><span>    };
+</span><span>    </span><span style=color:#65737e>// SAFETY: Guaranteed by caller
+</span><span>    </span><span style=color:#b48ead>unsafe </span><span>{ ManuallyDrop::into_inner(alchemy.dst) }
+</span><span>}
+</span></code></pre><p>While this allows us to pass in <code>Src</code> and <code>Dst</code> that are different sizes, we don't actually need that in this case, so if it's possible to enforce their equality at compile time we probably should. To do this we can use a trick not available when <code>transmute</code> was originally designed — post-monomorphisation errors.<pre class=language-rust data-lang=rust style=color:#c0c5ce;background-color:#2b303b><code class=language-rust data-lang=rust><span style=color:#65737e>/// # Safety
+</span><span style=color:#65737e>/// See `mem::transmute`
+</span><span style=color:#b48ead>const unsafe fn </span><span style=color:#8fa1b3>transmute_const</span><span>&LTSrc, Dst>(</span><span style=color:#bf616a>src</span><span>: Src) -> Dst {
+</span><span>    </span><span style=color:#b48ead>const fn </span><span style=color:#8fa1b3>check_equal</span><span>&LTSrc, Dst>() {
+</span><span>        assert!(size_of::&LTSrc>() == size_of::&LTDst>());
+</span><span>    }
+</span><span>    </span><span style=color:#b48ead>const </span><span>{ check_equal::&LTSrc, Dst>() };
+</span><span>
+</span><span>    </span><span style=color:#65737e>// SAFETY:
+</span><span>    </span><span style=color:#65737e>//  - We checked `size_of::&LTSrc>() == size_of::&LTDst>()` above
+</span><span>    </span><span style=color:#65737e>//  - Everything else guaranteed by caller
+</span><span>    </span><span style=color:#b48ead>unsafe </span><span>{ transmute_unchecked::&LTSrc, Dst>(src) }
+</span><span>}
+</span></code></pre><h2 id=putting-it-all-together>Putting it all together</h2><p>With this we can change the call to <code>transmute</code> in <code>array_assume_init</code> to <code>transmute_const</code> and put it all together, resulting in a fully functional <code>from_const_fn</code> macro.<pre class=language-rust data-lang=rust style=color:#c0c5ce;background-color:#2b303b><code class=language-rust data-lang=rust><span style=color:#96b5b4>macro_rules! </span><span>from_const_fn {
+</span><span>    (</span><span style=color:#bf616a>$cb</span><span>:</span><span style=color:#b48ead>expr</span><span>, </span><span style=color:#bf616a>$n</span><span>:</span><span style=color:#b48ead>expr</span><span>) => {{
+</span><span>        </span><span style=color:#b48ead>let mut</span><span> array = [</span><span style=color:#b48ead>const </span><span>{ ::core::mem::MaybeUninit::uninit() }; </span><span style=color:#bf616a>$n</span><span>];
+</span><span>        </span><span style=color:#b48ead>let mut</span><span> i = </span><span style=color:#d08770>0</span><span>;
+</span><span>        </span><span style=color:#b48ead>while</span><span> i < </span><span style=color:#bf616a>$n </span><span>{
+</span><span>            array[i] = ::core::mem::MaybeUninit::new(</span><span style=color:#bf616a>$cb</span><span>(i));
+</span><span>            i += </span><span style=color:#d08770>1</span><span>;
+</span><span>        }
+</span><span>        </span><span style=color:#65737e>// SAFETY: We initialised each `MaybeUninit` in the loop
+</span><span>        </span><span style=color:#65737e>//  so we can `assume_init`
+</span><span>        </span><span style=color:#b48ead>unsafe </span><span>{ </span><span style=color:#bf616a>$crate</span><span>::array_assume_init(array) }
+</span><span>    }};
+</span><span>}
+</span><span>
+</span><span style=color:#b48ead>const fn </span><span style=color:#8fa1b3>multiply</span><span>(</span><span style=color:#bf616a>n</span><span>: </span><span style=color:#b48ead>usize</span><span>) -> </span><span style=color:#b48ead>u8 </span><span>{
+</span><span>    n as </span><span style=color:#b48ead>u8 </span><span>* </span><span style=color:#d08770>2
+</span><span>}
+</span><span style=color:#b48ead>const </span><span style=color:#d08770>MULTIPLES_OF_2</span><span>: [</span><span style=color:#b48ead>u8</span><span>; </span><span style=color:#d08770>10</span><span>] = from_const_fn!(multiply, </span><span style=color:#d08770>10</span><span>);
+</span></code></pre><h2 id=why-does-this-not-feel-fully-satisfying>Why does this not feel fully satisfying?</h2><p>We did it, it works, but that extra number when calling it is very clunky and <em>should</em> be completely unnecessary. After all <code>array::from_fn</code> doesn't need you to specify the length, instead implying it from context. But macros don't get type elision, and we found early on that a function was not going to cut it. So what about both, a macro calling a function. <em>Well</em>, this would allow us to place the callback into the function directly (so that we don't have to pass it as an argument) and the return type should give us the <code>N</code> that we need, so it seems worth a try.<pre class=language-rust data-lang=rust style=color:#c0c5ce;background-color:#2b303b><code class=language-rust data-lang=rust><span style=color:#96b5b4>macro_rules! </span><span>from_const_fn {
+</span><span>    (</span><span style=color:#bf616a>$cb</span><span>:</span><span style=color:#b48ead>expr</span><span>) => {{
+</span><span>        </span><span style=color:#b48ead>const fn </span><span style=color:#8fa1b3>from_const_fn</span><span>&LTT, </span><span style=color:#b48ead>const</span><span> N: </span><span style=color:#b48ead>usize</span><span>>() -> [T; N] {
+</span><span>            </span><span style=color:#b48ead>let mut</span><span> array = [</span><span style=color:#b48ead>const </span><span>{ ::core::mem::MaybeUninit::&LTT>::uninit() }; N];
+</span><span>            </span><span style=color:#b48ead>let mut</span><span> i = </span><span style=color:#d08770>0</span><span>;
+</span><span>            </span><span style=color:#b48ead>while</span><span> i < N {
+</span><span>                array[i] = ::core::mem::MaybeUninit::new(</span><span style=color:#bf616a>$cb</span><span>(i));
+</span><span>                i += </span><span style=color:#d08770>1</span><span>;
+</span><span>            }
+</span><span>            </span><span style=color:#65737e>// SAFETY: We initialised each `MaybeUninit` in the loop
+</span><span>            </span><span style=color:#65737e>//  so we can `assume_init`
+</span><span>            </span><span style=color:#b48ead>unsafe </span><span>{ </span><span style=color:#bf616a>$crate</span><span>::transmute_const(array) }
+</span><span>        }
+</span><span>
+</span><span>        </span><span style=color:#96b5b4>from_const_fn</span><span>()
+</span><span>    }};
+</span><span>}
+</span></code></pre><p>We can even remove <code>array_assume_init</code> as now that its all wrapped in a function we can give <code>array</code> a specific type, constraining <code>transmute_const</code> sufficiently. However the compiler now complains that <code>$cb(i)</code> is returning a <code>u8</code> where its expecting <code>T</code>. And it has a point, we're no longer proving that the callback returns the same type as <code>array</code> expects. Luckily however, while we can't call functions passed as arguments, we can still pass one in and therefore use it to constrain <code>T</code>.<pre class=language-rust data-lang=rust style=color:#c0c5ce;background-color:#2b303b><code class=language-rust data-lang=rust><span style=color:#96b5b4>macro_rules! </span><span>from_const_fn {
+</span><span>    (</span><span style=color:#bf616a>$cb</span><span>:</span><span style=color:#b48ead>expr</span><span>) => {{
+</span><span>        </span><span style=color:#65737e>/// # Safety
+</span><span>        </span><span style=color:#65737e>/// `</span><span style=color:#bf616a>$cb</span><span style=color:#65737e>` must return the same type as the passed function `_`
+</span><span>        </span><span style=color:#b48ead>const unsafe fn </span><span style=color:#8fa1b3>from_const_fn</span><span>&LTT, </span><span style=color:#b48ead>const</span><span> N: </span><span style=color:#b48ead>usize</span><span>>(
+</span><span>            _: ::core::mem::ManuallyDrop&LTimpl FnMut(</span><span style=color:#b48ead>usize</span><span>) -> T>, </span><span style=color:#65737e>// &LT-- Note 1
+</span><span>        ) -> [T; N] {
+</span><span>            </span><span style=color:#b48ead>let mut</span><span> array = [</span><span style=color:#b48ead>const </span><span>{ ::core::mem::MaybeUninit::&LTT>::uninit() }; N];
+</span><span>            </span><span style=color:#b48ead>let mut</span><span> i = </span><span style=color:#d08770>0</span><span>;
+</span><span>            </span><span style=color:#b48ead>while</span><span> i < N {
+</span><span>                </span><span style=color:#65737e>// SAFETY: `</span><span style=color:#bf616a>$cb</span><span style=color:#65737e>(i)` returns `T` as guaranteed by caller
+</span><span>                array[i] = ::core::mem::MaybeUninit::new(</span><span style=color:#b48ead>unsafe </span><span>{
+</span><span>                    </span><span style=color:#bf616a>$crate</span><span>::transmute_const(</span><span style=color:#bf616a>$cb</span><span>(i)) </span><span style=color:#65737e>// &LT-- Note 2
+</span><span>                });
+</span><span>                i += </span><span style=color:#d08770>1</span><span>;
+</span><span>            }
+</span><span>            </span><span style=color:#65737e>// SAFETY: We initialised each `MaybeUninit` in the loop
+</span><span>            </span><span style=color:#65737e>//  so we can `assume_init`
+</span><span>            </span><span style=color:#b48ead>unsafe </span><span>{ </span><span style=color:#bf616a>$crate</span><span>::transmute_const(array) }
+</span><span>        }
+</span><span>
+</span><span>        </span><span style=color:#65737e>// SAFETY: `</span><span style=color:#bf616a>$cb</span><span style=color:#65737e>` is the passed function so it returns the same type.
+</span><span>        </span><span style=color:#b48ead>unsafe </span><span>{ </span><span style=color:#96b5b4>from_const_fn</span><span>(::core::mem::ManuallyDrop::new(</span><span style=color:#bf616a>$cb</span><span>)) }
+</span><span>    }};
+</span><span>}
+</span></code></pre><p>There are a couple of slightly unusual additions here marked with comments:<ol><li>We wrap our function input in a <code>ManuallyDrop</code> as otherwise the compiler complains about <code>Drop</code> in a <code>const</code> function, which isn't currently supported. While this in theory could cause it to leak memory, in practice I don't know a way of making a function that needs dropping without using <code>move</code> closures. And if we try and pass a <code>move</code> closure to this macro (even at runtime) the compiler will complain so this <code>ManuallyDrop</code> causes no issues.<li>Despite the return type of <code>$cb</code> now being guaranteed to match <code>T</code> the compiler still can't prove this so we still have to transmute it, it's just safe to do so now.</ol><h2 id=drop-safety>Drop Safety</h2><p>Thanks to an event sometimes known as the '<a href=https://cglab.ca/%7Eabeinges/blah/everyone-poops/>Leakpocalypse</a>' it's not considered unsound in Rust to leak memory. But where it's avoidable it <em>is</em> impolite. If we drop a <code>MaybeUninit&LTT></code> it will not run the destructor on <code>T</code> because it doesn't know whether the type is initialised or not and therefore whether to destruct it (this is the same for any <code>union</code>). But as the function writer we do know as everything up to <code>i</code> is initialised, and everything after isn't.<p>Why would not dropping this ever matter though? After all it will only leak memory if it crashed halfway through and then the program ends so it doesn't matter. However if the passed callback function panics halfway through and then we catch the unwinding program and force it to continue, we've just leaked memory.<p>To fix this we can use a <code>Guard</code> struct that implements <code>drop</code> and then simply <code>mem::forget</code> it when we have fully initialised the array. As of <a href=https://blog.rust-lang.org/2024/11/28/Rust-1.83.0.html#new-const-capabilities>Rust 1.83</a> we can use mutable references in constants, making this possible on stable.<pre class=language-rust data-lang=rust style=color:#c0c5ce;background-color:#2b303b><code class=language-rust data-lang=rust><span style=color:#b48ead>use </span><span>core::{mem::MaybeUninit, ptr};
+</span><span>
+</span><span style=color:#b48ead>pub struct </span><span>Guard<</span><span style=color:#b48ead>'a</span><span>, T, </span><span style=color:#b48ead>const</span><span> N: </span><span style=color:#b48ead>usize</span><span>> {
+</span><span>    </span><span style=color:#b48ead>pub </span><span style=color:#bf616a>array</span><span>: &</span><span style=color:#b48ead>'a mut</span><span> [MaybeUninit&LTT>; N],
+</span><span>    </span><span style=color:#bf616a>index</span><span>: </span><span style=color:#b48ead>usize</span><span>,
+</span><span>}
+</span><span>
+</span><span style=color:#b48ead>impl</span><span>&LTT, </span><span style=color:#b48ead>const</span><span> N: </span><span style=color:#b48ead>usize</span><span>> Drop </span><span style=color:#b48ead>for </span><span>Guard<'_, T, N> {
+</span><span>    </span><span style=color:#b48ead>fn </span><span style=color:#8fa1b3>drop</span><span>(&</span><span style=color:#b48ead>mut </span><span style=color:#bf616a>self</span><span>) {
+</span><span>        </span><span style=color:#65737e>// SAFETY: `array` must be initialised up to `index` so we can
+</span><span>        </span><span style=color:#65737e>//  reinterpret a slice up to there as `[T]`
+</span><span>        </span><span style=color:#b48ead>let</span><span> slice = </span><span style=color:#b48ead>unsafe </span><span>{
+</span><span>            ptr::from_mut(</span><span style=color:#bf616a>self</span><span>.array.</span><span style=color:#96b5b4>get_unchecked_mut</span><span>(..</span><span style=color:#bf616a>self</span><span>.index)) as </span><span style=color:#b48ead>*mut </span><span>[T]
+</span><span>        };
+</span><span>        </span><span style=color:#65737e>// SAFETY:
+</span><span>        </span><span style=color:#65737e>//  - `slice` is a pointer formed from a mutable slice so is
+</span><span>        </span><span style=color:#65737e>//     valid, aligned, nonnull and unique
+</span><span>        </span><span style=color:#65737e>//  - The values held in `slice` were generated safely so
+</span><span>        </span><span style=color:#65737e>//     must uphold their invariants
+</span><span>        </span><span style=color:#b48ead>unsafe </span><span>{ ptr::drop_in_place(slice) }
+</span><span>        eprintln!("</span><span style=color:#a3be8c>Panicked, dropped </span><span style=color:#d08770>{}</span><span style=color:#a3be8c> items</span><span>", </span><span style=color:#bf616a>self</span><span>.index);
+</span><span>    }
+</span><span>}
+</span><span>
+</span><span style=color:#b48ead>impl</span><span><</span><span style=color:#b48ead>'a</span><span>, T, </span><span style=color:#b48ead>const</span><span> N: </span><span style=color:#b48ead>usize</span><span>> Guard<</span><span style=color:#b48ead>'a</span><span>, T, N> {
+</span><span>    </span><span style=color:#b48ead>pub const fn </span><span style=color:#8fa1b3>new</span><span>(</span><span style=color:#bf616a>array</span><span>: &</span><span style=color:#b48ead>'a mut</span><span> [MaybeUninit&LTT>; N]) -> </span><span style=color:#b48ead>Self </span><span>{
+</span><span>        </span><span style=color:#b48ead>Self </span><span>{ array, index: </span><span style=color:#d08770>0 </span><span>}
+</span><span>    }
+</span><span>
+</span><span>    </span><span style=color:#b48ead>pub const fn </span><span style=color:#8fa1b3>get_index</span><span>(&</span><span style=color:#bf616a>self</span><span>) -> </span><span style=color:#b48ead>usize </span><span>{
+</span><span>        </span><span style=color:#bf616a>self</span><span>.index
+</span><span>    }
+</span><span>
+</span><span>    </span><span style=color:#65737e>/// # Safety
+</span><span>    </span><span style=color:#65737e>///  - `self.array` must be initialised up to and including the new `self.index`
+</span><span>    </span><span style=color:#65737e>///  - `self.array.len()` must be greater than `self.index`
+</span><span>    </span><span style=color:#b48ead>pub const unsafe fn </span><span style=color:#8fa1b3>increment</span><span>(&</span><span style=color:#b48ead>mut </span><span style=color:#bf616a>self</span><span>) {
+</span><span>        </span><span style=color:#bf616a>self</span><span>.index += </span><span style=color:#d08770>1</span><span>;
+</span><span>    }
+</span><span>}
+</span></code></pre><p>Then we can simply use <code>Guard::get_index</code> instead of storing <code>i</code> separately in our function body. The reason we have to use getter and setter methods for <code>index</code> here is that changing <code>index</code> can be unsound if <code>array</code> isn't actually sufficiently initialised.<h2 id=closure-support>Closure Support</h2><p>The primary remaining annoyance with our <code>from_const_fn!</code> in comparison to <code>array::from_fn</code> is that when used in <code>const</code> we can't use a closure in it, despite the functions used often being very simple, because closures aren't supported in <code>const</code>. However this isn't a function, its a macro, so we can parse the closure ourselves and convert it into a function (provided it doesn't do anything closure specific).<pre class=language-rust data-lang=rust style=color:#c0c5ce;background-color:#2b303b><code class=language-rust data-lang=rust><span style=color:#96b5b4>macro_rules! </span><span>convert_function {
+</span><span>    (|</span><span style=color:#bf616a>$var</span><span>:</span><span style=color:#b48ead>ident </span><span>$(: $_:ty)?| -> </span><span style=color:#bf616a>$__</span><span>:</span><span style=color:#b48ead>ty </span><span style=color:#bf616a>$body</span><span>:</span><span style=color:#b48ead>block</span><span>) => {
+</span><span>        </span><span style=color:#bf616a>$crate</span><span>::convert_function!(|</span><span style=color:#bf616a>$var</span><span>| </span><span style=color:#bf616a>$body</span><span>)
+</span><span>    };
+</span><span>    (|</span><span style=color:#bf616a>$var</span><span>:</span><span style=color:#b48ead>ident </span><span>$(: $_:ty)?| </span><span style=color:#bf616a>$body</span><span>:</span><span style=color:#b48ead>expr</span><span>) => {
+</span><span>        </span><span style=color:#65737e>/// # Safety
+</span><span>        </span><span style=color:#65737e>/// `</span><span style=color:#bf616a>$body</span><span style=color:#65737e>` must return `T`
+</span><span>        </span><span style=color:#b48ead>const unsafe fn </span><span style=color:#8fa1b3>callback</span><span>&LTT>(</span><span style=color:#bf616a>$var</span><span>: </span><span style=color:#b48ead>usize</span><span>) -> T {
+</span><span>            </span><span style=color:#65737e>// By placing `</span><span style=color:#bf616a>$body</span><span style=color:#65737e>` in a separate expression we prevent running
+</span><span>            </span><span style=color:#65737e>//  `unsafe` code without a visible `unsafe` block
+</span><span>            </span><span style=color:#b48ead>let</span><span> body = </span><span style=color:#bf616a>$body</span><span>;
+</span><span>            </span><span style=color:#65737e>// SAFETY: Guaranteed by caller
+</span><span>            </span><span style=color:#b48ead>unsafe </span><span>{ </span><span style=color:#bf616a>$crate</span><span>::transmute_const(body) }
+</span><span>        }
+</span><span>    };
+</span><span>    (</span><span style=color:#bf616a>$cb</span><span>:</span><span style=color:#b48ead>expr</span><span>) => {
+</span><span>        </span><span style=color:#65737e>/// # Safety
+</span><span>        </span><span style=color:#65737e>/// `</span><span style=color:#bf616a>$cb</span><span style=color:#65737e>` must return `T`
+</span><span>        </span><span style=color:#b48ead>const unsafe fn </span><span style=color:#8fa1b3>callback</span><span>&LTT>(</span><span style=color:#bf616a>i</span><span>: </span><span style=color:#b48ead>usize</span><span>) -> T {
+</span><span>            </span><span style=color:#65737e>// SAFETY: Guaranteed by caller
+</span><span>            </span><span style=color:#b48ead>unsafe </span><span>{ </span><span style=color:#bf616a>$crate</span><span>::transmute_const(</span><span style=color:#bf616a>$cb</span><span>(i)) }
+</span><span>        }
+</span><span>    }
+</span><span>}
+</span></code></pre><p>The closure signatures <code>|$var:ident $(: $_:ty)?| -> $__:ty $body:block</code> (and similar) are a little complicated but all they do is recognise <code>|&LTvariable>| &LTbody></code> while ignoring type signatures.<p><em>(Edited 2024-12-5 to change <code>$ident</code> to <code>$ty</code>, thanks <a href="https://www.reddit.com/r/rust/comments/1h6in8z/comment/m0e3dt3/?utm_source=share&utm_medium=web3x&utm_name=web3xcss&utm_term=1&utm_content=share_button">u/AlxandrHeintz</a>. Edited again 2024-12-13 to change <code>{$body:expr}</code> to <code>$body:block</code>, thanks <a href=https://github.com/Jisu-Woniu>@Jisu-Woniu</a>)</em><h2 id=and-we-re-done>And we're done!</h2><p>With this conversion macro and the guard changes above, we're done, a fully functional <code>array::from_fn</code> equivalent that supports everything except closures borrowing from their environment, and works in <code>const</code>.<pre class=language-rust data-lang=rust style=color:#c0c5ce;background-color:#2b303b><code class=language-rust data-lang=rust><span>#[</span><span style=color:#bf616a>macro_export</span><span>]
+</span><span>#[</span><span style=color:#bf616a>doc</span><span>(hidden)]
+</span><span style=color:#96b5b4>macro_rules! </span><span>convert_function {
+</span><span>    (|</span><span style=color:#bf616a>$var</span><span>:</span><span style=color:#b48ead>ident </span><span>$(: $_:ty)?| -> </span><span style=color:#bf616a>$__</span><span>:</span><span style=color:#b48ead>ty </span><span style=color:#bf616a>$body</span><span>:</span><span style=color:#b48ead>block</span><span>) => {
+</span><span>        </span><span style=color:#bf616a>$crate</span><span>::convert_function!(|</span><span style=color:#bf616a>$var</span><span>| </span><span style=color:#bf616a>$body</span><span>)
+</span><span>    };
+</span><span>    (|</span><span style=color:#bf616a>$var</span><span>:</span><span style=color:#b48ead>ident </span><span>$(: $_:ty)?| </span><span style=color:#bf616a>$body</span><span>:</span><span style=color:#b48ead>expr</span><span>) => {
+</span><span>        </span><span style=color:#65737e>/// # Safety
+</span><span>        </span><span style=color:#65737e>/// `</span><span style=color:#bf616a>$body</span><span style=color:#65737e>` must return `T`
+</span><span>        </span><span style=color:#b48ead>const unsafe fn </span><span style=color:#8fa1b3>callback</span><span>&LTT>(</span><span style=color:#bf616a>$var</span><span>: </span><span style=color:#b48ead>usize</span><span>) -> T {
+</span><span>            </span><span style=color:#65737e>// By placing `</span><span style=color:#bf616a>$body</span><span style=color:#65737e>` in a separate expression we prevent running
+</span><span>            </span><span style=color:#65737e>//  `unsafe` code without a visible `unsafe` block
+</span><span>            </span><span style=color:#b48ead>let</span><span> body = </span><span style=color:#bf616a>$body</span><span>;
+</span><span>            </span><span style=color:#65737e>// SAFETY: Guaranteed by caller
+</span><span>            </span><span style=color:#b48ead>unsafe </span><span>{ </span><span style=color:#bf616a>$crate</span><span>::transmute_const(body) }
+</span><span>        }
+</span><span>    };
+</span><span>    (</span><span style=color:#bf616a>$cb</span><span>:</span><span style=color:#b48ead>expr</span><span>) => {
+</span><span>        </span><span style=color:#65737e>/// # Safety
+</span><span>        </span><span style=color:#65737e>/// `</span><span style=color:#bf616a>$cb</span><span style=color:#65737e>` must return `T`
+</span><span>        </span><span style=color:#b48ead>const unsafe fn </span><span style=color:#8fa1b3>callback</span><span>&LTT>(</span><span style=color:#bf616a>i</span><span>: </span><span style=color:#b48ead>usize</span><span>) -> T {
+</span><span>            </span><span style=color:#65737e>// SAFETY: Guaranteed by caller
+</span><span>            </span><span style=color:#b48ead>unsafe </span><span>{ </span><span style=color:#bf616a>$crate</span><span>::transmute_const(</span><span style=color:#bf616a>$cb</span><span>(i)) }
+</span><span>        }
+</span><span>    };
+</span><span>}
+</span><span>
+</span><span>#[</span><span style=color:#bf616a>macro_export</span><span>]
+</span><span style=color:#96b5b4>macro_rules! </span><span>from_const_fn {
+</span><span>    </span><span style=color:#65737e>// We have to accept `</span><span style=color:#bf616a>$cb</span><span style=color:#65737e>` as a token stream otherwise it won't correctly match in `convert_function!`
+</span><span>    ($(</span><span style=color:#bf616a>$cb</span><span>:</span><span style=color:#b48ead>tt</span><span>)*) => {{
+</span><span>        </span><span style=color:#bf616a>$crate</span><span>::convert_function!($(</span><span style=color:#bf616a>$cb</span><span>)*);
+</span><span>
+</span><span>        </span><span style=color:#65737e>/// # Safety
+</span><span>        </span><span style=color:#65737e>/// `</span><span style=color:#bf616a>$cb</span><span style=color:#65737e>` must return the same type as the passed function `_`
+</span><span>        </span><span style=color:#b48ead>const unsafe fn </span><span style=color:#8fa1b3>from_const_fn</span><span>&LTT, </span><span style=color:#b48ead>const</span><span> N: </span><span style=color:#b48ead>usize</span><span>>(
+</span><span>            _: ::core::mem::ManuallyDrop&LTimpl FnMut(</span><span style=color:#b48ead>usize</span><span>) -> T>,
+</span><span>        ) -> [T; N] {
+</span><span>            </span><span style=color:#b48ead>let mut</span><span> array = [</span><span style=color:#b48ead>const </span><span>{ ::core::mem::MaybeUninit::&LTT>::uninit() }; N];
+</span><span>            </span><span style=color:#b48ead>let mut</span><span> guard = </span><span style=color:#bf616a>$crate</span><span>::Guard::new(&</span><span style=color:#b48ead>mut</span><span> array);
+</span><span>            </span><span style=color:#b48ead>while</span><span> guard.</span><span style=color:#96b5b4>get_index</span><span>() < N {
+</span><span>                </span><span style=color:#65737e>// SAFETY: `</span><span style=color:#bf616a>$cb</span><span style=color:#65737e>(i)` returns `T` as guaranteed by caller
+</span><span>                </span><span style=color:#b48ead>let</span><span> val = </span><span style=color:#b48ead>unsafe </span><span>{ </span><span style=color:#96b5b4>callback</span><span>(guard.</span><span style=color:#96b5b4>get_index</span><span>()) };
+</span><span>                guard.array[guard.</span><span style=color:#96b5b4>get_index</span><span>()] = ::core::mem::MaybeUninit::new(val);
+</span><span>                guard.</span><span style=color:#96b5b4>increment</span><span>();
+</span><span>            }
+</span><span>            ::core::mem::forget(guard);
+</span><span>            </span><span style=color:#65737e>// SAFETY: i == N so the whole array is initialised
+</span><span>            </span><span style=color:#b48ead>unsafe </span><span>{ </span><span style=color:#bf616a>$crate</span><span>::transmute_const(array) }
+</span><span>        }
+</span><span>
+</span><span>        </span><span style=color:#65737e>// SAFETY: `</span><span style=color:#bf616a>$cb</span><span style=color:#65737e>` is the passed function so it returns the same type.
+</span><span>        </span><span style=color:#b48ead>unsafe </span><span>{ </span><span style=color:#96b5b4>from_const_fn</span><span>(::core::mem::ManuallyDrop::new($(</span><span style=color:#bf616a>$cb</span><span>)*)) }
+</span><span>    }};
+</span><span>}
+</span><span>
+</span><span style=color:#b48ead>use </span><span>core::{
+</span><span>    mem::{ManuallyDrop, MaybeUninit},
+</span><span>    ptr,
+</span><span>};
+</span><span>
+</span><span>#[</span><span style=color:#bf616a>doc</span><span>(hidden)]
+</span><span style=color:#b48ead>pub struct </span><span>Guard<</span><span style=color:#b48ead>'a</span><span>, T, </span><span style=color:#b48ead>const</span><span> N: </span><span style=color:#b48ead>usize</span><span>> {
+</span><span>    </span><span style=color:#b48ead>pub </span><span style=color:#bf616a>array</span><span>: &</span><span style=color:#b48ead>'a mut</span><span> [MaybeUninit&LTT>; N],
+</span><span>    </span><span style=color:#bf616a>index</span><span>: </span><span style=color:#b48ead>usize</span><span>,
+</span><span>}
+</span><span>
+</span><span style=color:#b48ead>impl</span><span>&LTT, </span><span style=color:#b48ead>const</span><span> N: </span><span style=color:#b48ead>usize</span><span>> Drop </span><span style=color:#b48ead>for </span><span>Guard<'_, T, N> {
+</span><span>    </span><span style=color:#b48ead>fn </span><span style=color:#8fa1b3>drop</span><span>(&</span><span style=color:#b48ead>mut </span><span style=color:#bf616a>self</span><span>) {
+</span><span>        </span><span style=color:#65737e>// SAFETY: `array` must be initialised up to `index` so we can
+</span><span>        </span><span style=color:#65737e>//  reinterpret a slice up to there as `[T]`
+</span><span>        </span><span style=color:#b48ead>let</span><span> slice = </span><span style=color:#b48ead>unsafe </span><span>{
+</span><span>            ptr::from_mut(</span><span style=color:#bf616a>self</span><span>.array.</span><span style=color:#96b5b4>get_unchecked_mut</span><span>(..</span><span style=color:#bf616a>self</span><span>.index)) as </span><span style=color:#b48ead>*mut </span><span>[T]
+</span><span>        };
+</span><span>        </span><span style=color:#65737e>// SAFETY:
+</span><span>        </span><span style=color:#65737e>//  - `slice` is a pointer formed from a mutable slice so is
+</span><span>        </span><span style=color:#65737e>//     valid, aligned, nonnull and unique
+</span><span>        </span><span style=color:#65737e>//  - The values held in `slice` were generated safely so
+</span><span>        </span><span style=color:#65737e>//     must uphold their invariants
+</span><span>        </span><span style=color:#b48ead>unsafe </span><span>{ ptr::drop_in_place(slice) }
+</span><span>        eprintln!("</span><span style=color:#a3be8c>Panicked, dropped </span><span style=color:#d08770>{}</span><span style=color:#a3be8c> items</span><span>", </span><span style=color:#bf616a>self</span><span>.index);
+</span><span>    }
+</span><span>}
+</span><span>
+</span><span style=color:#b48ead>impl</span><span><</span><span style=color:#b48ead>'a</span><span>, T, </span><span style=color:#b48ead>const</span><span> N: </span><span style=color:#b48ead>usize</span><span>> Guard<</span><span style=color:#b48ead>'a</span><span>, T, N> {
+</span><span>    </span><span style=color:#b48ead>pub const fn </span><span style=color:#8fa1b3>new</span><span>(</span><span style=color:#bf616a>array</span><span>: &</span><span style=color:#b48ead>'a mut</span><span> [MaybeUninit&LTT>; N]) -> </span><span style=color:#b48ead>Self </span><span>{
+</span><span>        </span><span style=color:#b48ead>Self </span><span>{ array, index: </span><span style=color:#d08770>0 </span><span>}
+</span><span>    }
+</span><span>
+</span><span>    </span><span style=color:#b48ead>pub const fn </span><span style=color:#8fa1b3>get_index</span><span>(&</span><span style=color:#bf616a>self</span><span>) -> </span><span style=color:#b48ead>usize </span><span>{
+</span><span>        </span><span style=color:#bf616a>self</span><span>.index
+</span><span>    }
+</span><span>
+</span><span>    </span><span style=color:#65737e>/// # Safety
+</span><span>    </span><span style=color:#65737e>///  - `self.array` must be initialised up to and including the new `self.index`
+</span><span>    </span><span style=color:#65737e>///  - `self.array.len()` must be greater than `self.index`
+</span><span>    </span><span style=color:#b48ead>pub const unsafe fn </span><span style=color:#8fa1b3>increment</span><span>(&</span><span style=color:#b48ead>mut </span><span style=color:#bf616a>self</span><span>) {
+</span><span>        </span><span style=color:#bf616a>self</span><span>.index += </span><span style=color:#d08770>1</span><span>;
+</span><span>    }
+</span><span>}
+</span><span>
+</span><span style=color:#65737e>/// # Safety
+</span><span style=color:#65737e>/// See `mem::transmute`
+</span><span>#[</span><span style=color:#bf616a>doc</span><span>(hidden)]
+</span><span style=color:#b48ead>pub const unsafe fn </span><span style=color:#8fa1b3>transmute_const</span><span>&LTSrc, Dst>(</span><span style=color:#bf616a>src</span><span>: Src) -> Dst {
+</span><span>    </span><span style=color:#b48ead>const fn </span><span style=color:#8fa1b3>check_equal</span><span>&LTSrc, Dst>() {
+</span><span>        assert!(size_of::&LTSrc>() == size_of::&LTDst>());
+</span><span>    }
+</span><span>    </span><span style=color:#b48ead>const </span><span>{ check_equal::&LTSrc, Dst>() };
+</span><span>
+</span><span>    </span><span style=color:#65737e>// SAFETY:
+</span><span>    </span><span style=color:#65737e>//  - We check they are the same size above
+</span><span>    </span><span style=color:#65737e>//  - Everything else guaranteed by caller
+</span><span>    </span><span style=color:#b48ead>unsafe </span><span>{ transmute_unchecked::&LTSrc, Dst>(src) }
+</span><span>}
+</span><span>
+</span><span style=color:#65737e>/// # Safety
+</span><span style=color:#65737e>///  - The caller must follow all invariants of `mem::transmute`
+</span><span style=color:#65737e>///  - `size_of::&LTSrc>() == size_of::&LTDst>()`
+</span><span style=color:#b48ead>const unsafe fn </span><span style=color:#8fa1b3>transmute_unchecked</span><span>&LTSrc, Dst>(</span><span style=color:#bf616a>src</span><span>: Src) -> Dst {
+</span><span>    #[</span><span style=color:#bf616a>repr</span><span>(C)]
+</span><span>    union Transmute&LTSrc, Dst> {
+</span><span>        src: ManuallyDrop&LTSrc>,
+</span><span>        dst: ManuallyDrop&LTDst>,
+</span><span>    }
+</span><span>
+</span><span>    </span><span style=color:#b48ead>let</span><span> alchemy = Transmute {
+</span><span>        src: ManuallyDrop::new(src),
+</span><span>    };
+</span><span>    </span><span style=color:#65737e>// SAFETY: Guaranteed by caller
+</span><span>    </span><span style=color:#b48ead>unsafe </span><span>{ ManuallyDrop::into_inner(alchemy.dst) }
+</span><span>}
+</span></code></pre><p>All the code related to this can be found on <a href=https://github.com/13ros27/from_const_fn>Github</a>.<p class=tags-data></main><footer><hr><div id=footer-container><div><p>Theme and color theme licensed under <a rel="noopener noreferrer" href=https://en.wikipedia.org/wiki/Licence_MIT target=_blank>MIT</a>.<br> Built with <a rel="noopener noreferrer" href=https://www.getzola.org target=_blank>Zola</a> using <a rel="noopener noreferrer" href=https://github.com/Speyll/anemone target=_blank>anemone</a> theme, <a rel="noopener noreferrer" href=https://speyll.github.io/suCSS/ target=_blank>suCSS</a> framework & <a rel="noopener noreferrer" href=https://github.com/Speyll/veqev target=_blank>veqev</a>.<br></div><div><a rel="noopener noreferrer" title="Subscribe via RSS for updates." class=no-style href=https://13ros27.github.io/atom.xml target=_blank><svg class=icons><use href=https://13ros27.github.io/icons.svg#rss></use></svg></a></div></div></footer>
