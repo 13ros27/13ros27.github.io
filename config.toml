@@ -9,8 +9,8 @@ feed_filenames = ["atom.xml", "rss.xml"]
 
 theme = "anemone"
 
-[markdown]
-highlight_code = true
+[markdown.highlighting]
+theme = "github-dark"
 
 [link_checker]
 internal_level = "warn"
